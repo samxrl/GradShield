@@ -109,7 +109,7 @@ Visualizing token importance can clearly demonstrate the token importance values
   * `BehaviorID`: The Behavior ID of HarmBench, which is also the key in `defense_results\defense_results_<Jailbreak>_<model_name>.json`
 
   
-  - The HTML file will be saved in `visualization\visualization_<Jailbreak>_<model_name>_<Behavior ID>.html` as shown in the example:
+ - The HTML file will be saved in `visualization\visualization_<Jailbreak>_<model_name>_<Behavior ID>.html` as shown in the example:
     <img src="images/visualization_example.png" alt="示例图片" width="80%"/>
   
     *_The redder the token, the more important it is._
