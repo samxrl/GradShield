@@ -3,7 +3,7 @@
 
 ![The Workflow of GradShield](images/workflow.png "The Workflow of GradShield")
 
-**⚠️ <span style="color:red;">Content Warning:</span>** This project contains examples of harmful language that some readers may find offensive.
+**⚠️Content Warning:** This project contains examples of harmful language that some readers may find offensive.
 
 ## 🛠️Install
 
