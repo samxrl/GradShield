@@ -31,7 +31,7 @@ GradShield(model, tokenizer, template, prompt, copies, std ,top_k)
 * `prompt`: The adversarial prompt used to attack the target LLM
 * `copies`: The number of perturbed copies $P$, defaulting to `10`
 * `std`: The tup of lower bound $\sigma_{\min}$ and upper bound $\sigma_{\max}$ of Gaussian blur standard deviation,  defaulting to `(0.05, 0.5)`
-* `top_k`: The number of top-$k$ tokens of LLM's outputs to be calculated perplexity, defaulting to `4`
+* `top_k`: The number of top-k tokens of LLM's outputs to be calculated perplexity, defaulting to `4`
 
 **returns**
 * `response`: The string of final response after being defended by GradShield
@@ -77,7 +77,7 @@ Evaluate GradShield's defense capability using adversarial prompts pre-generated
 
 
 - The final response will be saved in `defense_results\defense_results_<Jailbreak>_<model_name>.json` in the following format:
-  ```json
+  ```
   {
       "<Behavior ID of HarmBench>": {
           "prompt": <string of adversarial prompt>,
