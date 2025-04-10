@@ -116,4 +116,4 @@ Visualizing token importance can clearly demonstrate the token importance values
 
 ## 🙏 Acknowledgments
 
-We would like to thank the [**HarmBench**](https://github.com/centerforaisafety/HarmBench) project for providing adversarial prompts that significantly contributed to the evaluation of GradShield.
+We would like to thank the [**HarmBench**](https://github.com/centerforaisafety/HarmBench) project for providing adversarial prompts and HarmBench-Llama-2-13b-cls that significantly contributed to the evaluation of GradShield.
