@@ -1,0 +1,8 @@
+torch~=2.5.1+cu124
+transformers~=4.46.2
+numpy~=1.26.3
+huggingface-hub~=0.26.2
+fastchat~=0.1.0
+matplotlib~=3.9.3
+tqdm~=4.67.0
+pandas~=2.2.3

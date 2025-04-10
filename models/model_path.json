@@ -1,0 +1,7 @@
+{
+    "llama2_7b": "models/Llama-2-7b-chat-hf",
+    "vicuna_7b_v1_5": "../../models/vicuna_7b_v1_5",
+    "vicuna_13b_v1_5": "models/vicuna_13b_v1_5",
+    "baichuan2_7b": "models/Baichuan2-7B-Chat",
+    "koala_7b": "models/koala-7B-HF"
+}
