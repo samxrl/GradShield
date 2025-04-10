@@ -7,7 +7,7 @@
 
 ## 🛠️Install
 
-We suggest installing IATT in `Python 3.9` or higher versions, you can use the following command to install all the packages required by GradShield.
+We suggest installing GradShield in `Python 3.9` or higher versions, you can use the following command to install all the packages required by GradShield.
 
 ```
 pip install -r requirements.txt
