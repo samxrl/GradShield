@@ -216,7 +216,7 @@ if __name__ == '__main__':
     model, tokenizer = load_model_and_tokenizer(model_path[model_name], "bf16", device_map="balanced_low_0", trust_remote_code=True)
     template = get_template(model_path[model_name])
 
-    alphas = [0, 0.25, 0.5, 0.75]
+    alphas = [0.25, 0.5, 0.75]
 
     for alpha in alphas:
         # 每个 alpha 产生独立的防御结果文件，便于对比消融效果
