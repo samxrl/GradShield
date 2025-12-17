@@ -130,8 +130,8 @@ def GradShield_with_ablation(model, tokenizer, template, prompt, alpha: float, c
     token_importance = gradient_weighted_attention(model, tokenizer, template, prompt, top_k)
     mask_time = time.time() - mask_start
 
-    # 按照消融参数缩放 mask，alpha 越小削弱程度越高
-    scaled_mask = token_importance * alpha
+    # 按照消融参数消融 mask，alpha 越大削弱程度越高
+    scaled_mask = token_importance + alpha * (1-token_importance)
 
     input_embeddings, before_embeddings, after_embeddings, _ = get_embeddings(model, tokenizer, template, prompt)
 
