@@ -126,6 +126,35 @@ MIXTRAL_PROMPT = {
 
 ########## CHAT TEMPLATE ###########
 
+def _is_qwen3_8b_model(model_name_or_path):
+    normalized_model_path = (model_name_or_path or "").replace("\\", "/").lower()
+    return "qwen3-8b" in normalized_model_path
+
+
+def _get_tokenizer_chat_template(model_name_or_path, system_message=None, **chat_template_kwargs):
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    template = (
+        [{'role': 'system', 'content': system_message}, {'role': 'user', 'content': '{instruction}'}]
+        if system_message
+        else [{'role': 'user', 'content': '{instruction}'}]
+    )
+    prompt = tokenizer.apply_chat_template(
+        template,
+        tokenize=False,
+        add_generation_prompt=True,
+        **chat_template_kwargs,
+    )
+    # Check if the prompt starts with the BOS token
+    # removed <s> if it exist (LlamaTokenizer class usually have this) as our baselines will add these if needed later
+    if tokenizer.bos_token and prompt.startswith(tokenizer.bos_token):
+        prompt = prompt.replace(tokenizer.bos_token, "")
+
+    return {
+        'description': f"Template used by {model_name_or_path} (tokenizer.apply_chat_template)",
+        'prompt': prompt,
+    }
+
+
 def get_template(model_name_or_path=None, chat_template=None, system_message=None, **kwargs):
     # ===== Check for some older chat model templates ====
     if "wizard" in model_name_or_path.lower():
@@ -156,6 +185,14 @@ def get_template(model_name_or_path=None, chat_template=None, system_message=Non
         TEMPLATE = ORCA_2_PROMPT
     elif "baichuan2" in model_name_or_path.lower():
         TEMPLATE = BAICHUAN_CHAT_PROMPT
+    elif _is_qwen3_8b_model(model_name_or_path):
+        # Qwen3-8B enables thinking mode by default. Use Qwen's documented hard switch
+        # so GradShield experiments stay in non-thinking mode.
+        TEMPLATE = _get_tokenizer_chat_template(
+            model_name_or_path,
+            system_message=system_message,
+            enable_thinking=False,
+        )
     elif "qwen" in model_name_or_path.lower():
         TEMPLATE = QWEN_CHAT_PROMPT
     elif "zephyr_7b_robust" in model_name_or_path.lower():
@@ -163,15 +200,7 @@ def get_template(model_name_or_path=None, chat_template=None, system_message=Non
     else:
         # ======== Else default to tokenizer.apply_chat_template =======
         try:
-            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-            template = [{'role': 'system', 'content': system_message}, {'role': 'user', 'content': '{instruction}'}] if system_message else [
-                {'role': 'user', 'content': '{instruction}'}]
-            prompt = tokenizer.apply_chat_template(template, tokenize=False, add_generation_prompt=True)
-            # Check if the prompt starts with the BOS token
-            # removed <s> if it exist (LlamaTokenizer class usually have this) as our baselines will add these if needed later
-            if tokenizer.bos_token and prompt.startswith(tokenizer.bos_token):
-                prompt = prompt.replace(tokenizer.bos_token, "")
-            TEMPLATE = {'description': f"Template used by {model_name_or_path} (tokenizer.apply_chat_template)", 'prompt': prompt}
+            TEMPLATE = _get_tokenizer_chat_template(model_name_or_path, system_message=system_message)
         except:
             assert TEMPLATE, f"Can't find instruction template for {model_name_or_path}, and apply_chat_template failed."
 

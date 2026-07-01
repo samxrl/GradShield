@@ -114,6 +114,16 @@ def is_jailbroken(s):
 
 model_path = read_json_file("models/model_path.json")
 
+ADVERSARIAL_PROMPT_MODEL_ALIASES = {
+    "qwen3-8b": "qwen_7b_chat",
+    "llama-3.1-8b": "llama2_13b",
+}
+
+
+def get_adversarial_prompt_model_name(model_name):
+    return ADVERSARIAL_PROMPT_MODEL_ALIASES.get(model_name.lower(), model_name)
+
+
 def validate_theta(value):
     value = float(value)
     if not 0 <= value <= 1:
