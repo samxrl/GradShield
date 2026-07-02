@@ -13,6 +13,84 @@ def parse_jailbreak_list(values):
     return [item.strip("'\"") for item in normalized_value.split()]
 
 
+def normalize_label(label):
+    normalized_label = str(label).strip()
+    if normalized_label.lower().startswith("yes"):
+        return "Yes"
+    if normalized_label.lower().startswith("no"):
+        return "No"
+    return normalized_label
+
+
+def get_behavior_row(harmbench_behaviors, behavior_id):
+    extracted_rows = harmbench_behaviors[harmbench_behaviors['BehaviorID'] == behavior_id]
+    if extracted_rows.empty:
+        raise KeyError("BehaviorID '{}' was not found in HarmBench behaviors".format(behavior_id))
+    return extracted_rows.iloc[0]
+
+
+def build_classifier_prompt(harmbench_behaviors, behavior_id, generation):
+    behavior_row = get_behavior_row(harmbench_behaviors, behavior_id)
+    functional_category = behavior_row['FunctionalCategory']
+    behavior = behavior_row['Behavior']
+
+    if functional_category == 'contextual':
+        context = behavior_row['ContextString']
+        return LLAMA2_CLS_PROMPT["prompt_contextual"].format(context=context,
+                                                             behavior=behavior,
+                                                             generation=generation)
+    return LLAMA2_CLS_PROMPT["prompt"].format(behavior=behavior,
+                                              generation=generation)
+
+
+def judge_generation(cls, cls_tokenizer, harmbench_behaviors, behavior_id, generation):
+    prompt = build_classifier_prompt(harmbench_behaviors, behavior_id, generation)
+    encoded = cls_tokenizer(prompt, return_tensors='pt', padding='longest')
+    with torch.no_grad():
+        output_ids = cls.generate(
+            **encoded.to(cls.device),
+            do_sample=False,
+            max_new_tokens=1,
+        ).cpu()
+        output_ids = output_ids[:, len(encoded.input_ids[0]):]
+
+    completion = cls_tokenizer.batch_decode(output_ids, skip_special_tokens=False)
+    return normalize_label(completion[0])
+
+
+def write_defense_results(defense_results_file, defense_results):
+    with open(defense_results_file, "w", encoding="utf-8") as file:
+        json.dump(defense_results, file, indent=4, ensure_ascii=False)
+
+
+def judge_single_result(cls, cls_tokenizer, harmbench_behaviors, key, value):
+    behavior_id = value.get("behavior_id", key)
+    value['label'] = judge_generation(
+        cls,
+        cls_tokenizer,
+        harmbench_behaviors,
+        behavior_id,
+        value['response'],
+    )
+
+
+def judge_multiturn_result(cls, cls_tokenizer, harmbench_behaviors, key, value):
+    behavior_id = value.get("behavior_id", key)
+    turn_labels = []
+    for turn in value.get("turns", []):
+        if turn.get('label') is None:
+            turn['label'] = judge_generation(
+                cls,
+                cls_tokenizer,
+                harmbench_behaviors,
+                behavior_id,
+                turn.get('response', ''),
+            )
+        turn_labels.append(normalize_label(turn.get('label')))
+
+    value['label'] = "Yes" if "Yes" in turn_labels else "No"
+
+
 def run_judgment_for_jailbreak(
         cls,
         cls_tokenizer,
@@ -26,34 +104,14 @@ def run_judgment_for_jailbreak(
     for key, value in tqdm(defense_results.items()):
         if value['label'] is not None:
             continue
-        extracted_rows = harmbench_behaviors[harmbench_behaviors['BehaviorID'] == key]
-        functional_category = extracted_rows['FunctionalCategory'].values[0]
-        behavior = extracted_rows['Behavior'].values[0]
 
-        if functional_category == 'contextual':
-            context = extracted_rows['ContextString'].values[0]
-            prompt = LLAMA2_CLS_PROMPT["prompt_contextual"].format(context=context,
-                                                                   behavior=behavior,
-                                                                   generation=value['response'])
+        if "turns" in value:
+            judge_multiturn_result(cls, cls_tokenizer, harmbench_behaviors, key, value)
         else:
-            prompt = LLAMA2_CLS_PROMPT["prompt"].format(behavior=behavior,
-                                                        generation=value['response'])
-
-        encoded = cls_tokenizer(prompt, return_tensors='pt', padding='longest')
-        with torch.no_grad():
-            output_ids = cls.generate(
-                **encoded.to(cls.device),
-                do_sample=False,
-                max_new_tokens=1,
-            ).cpu()
-            output_ids = output_ids[:, len(encoded.input_ids[0]):]
-
-        completion = cls_tokenizer.batch_decode(output_ids, skip_special_tokens=False)
-        value['label'] = completion[0]
+            judge_single_result(cls, cls_tokenizer, harmbench_behaviors, key, value)
 
         # Write judgment results to JSON file
-        with open(defense_results_file, "w", encoding="utf-8") as file:
-            json.dump(defense_results, file, indent=4)
+        write_defense_results(defense_results_file, defense_results)
 
         torch.cuda.empty_cache()
 

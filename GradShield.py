@@ -54,6 +54,8 @@ class AttentionGradientHook:
         self.attention_grad = []
 
     def forward_hook(self, module, input, output):
+        if not isinstance(output, (tuple, list)) or len(output) < 2 or output[1] is None:
+            return output
         # Capture attention matrix from forward pass
         self.attention_matrix.append(output[1])
         # Enable gradient tracking for attention matrix
@@ -88,19 +90,22 @@ def gradient_weighted_attention(model: AutoModelForCausalLM, tokenizer, template
 
     # Register forward hooks on each model layer
     forward_handles = []
-    for layer in model.model.layers:
-        forward_handle = layer.register_forward_hook(hook.forward_hook)
-        forward_handles.append(forward_handle)
+    try:
+        for layer in model.model.layers:
+            forward_handle = layer.register_forward_hook(hook.forward_hook)
+            forward_handles.append(forward_handle)
 
-    input_embeds = torch.cat([
-        input_embeds,
-        prefix_embeds
-    ], dim=1)
+        input_embeds = torch.cat([
+            input_embeds,
+            prefix_embeds
+        ], dim=1)
 
-    model.zero_grad()
-    perplexity = get_perplexity(model, input_embeds, prefix)
+        model.zero_grad()
+        perplexity = get_perplexity(model, input_embeds, prefix)
 
-    if hook.attention_matrix is not None:
+        if not hook.attention_matrix:
+            raise RuntimeError("No attention matrices were captured for gradient weighting.")
+
         # Retrieve captured attention matrix
         attention_matrix = hook.attention_matrix
 
@@ -121,18 +126,19 @@ def gradient_weighted_attention(model: AutoModelForCausalLM, tokenizer, template
         weighted_attentions = np.maximum(weighted_attentions, 0)
         min_val = np.min(weighted_attentions)
         max_val = np.max(weighted_attentions)
-        token_importance = (weighted_attentions - min_val) / (max_val - min_val)
+        if max_val == min_val:
+            token_importance = np.zeros_like(weighted_attentions)
+        else:
+            token_importance = (weighted_attentions - min_val) / (max_val - min_val)
 
-    # Remove hooks and clean up
-    for forward_handle in forward_handles:
-        forward_handle.remove()
+        return token_importance
+    finally:
+        for forward_handle in forward_handles:
+            forward_handle.remove()
 
-    model.zero_grad()
-    torch.cuda.empty_cache()
-    del hook, attention_matrix, attention_grad, weighted_attentions, weighted_attention, input_embeds
-    gc.collect()
-
-    return token_importance
+        model.zero_grad()
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 # Generate Gaussian noise to add to embeddings
