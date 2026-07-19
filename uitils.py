@@ -17,7 +17,8 @@ refuse_list = {
     "As a language model",
     "As an Assistant",
     "I cannot",
-    "I do not"
+    "I do not",
+    "I can't"
 }
 
 

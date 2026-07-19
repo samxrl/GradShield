@@ -8,6 +8,87 @@ import gc
 import random
 
 
+DEFAULT_INSTRUCTION_PLACEHOLDER = "{instruction}"
+
+
+def tokenize_without_special_tokens(tokenizer: AutoTokenizer, text: str, device):
+    if text == "":
+        return torch.empty((1, 0), dtype=torch.long, device=device)
+    return tokenizer(text, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
+
+
+def embed_token_ids(model: AutoModelForCausalLM, token_ids: Tensor):
+    embedding_layer = model.get_input_embeddings()
+    if token_ids.shape[1] == 0:
+        return embedding_layer.weight.new_empty((1, 0, embedding_layer.embedding_dim))
+    with torch.no_grad():
+        return embedding_layer(token_ids)
+
+
+def normalize_segment(segment):
+    if isinstance(segment, dict):
+        return segment["placeholder"], segment["text"]
+    if isinstance(segment, (tuple, list)) and len(segment) == 2:
+        return segment[0], segment[1]
+    raise ValueError("User segment must be a dict or a (placeholder, text) pair.")
+
+
+def get_user_segments(template, test_case_input: str):
+    segments = [
+        normalize_segment(segment)
+        for segment in template.get("user_segments", [])
+    ]
+    current_placeholder = template.get("current_user_placeholder", DEFAULT_INSTRUCTION_PLACEHOLDER)
+    segments.append((current_placeholder, test_case_input))
+    return segments
+
+
+def split_template_prompt(prompt_template: str, segments):
+    parts = []
+    offset = 0
+    for placeholder, _ in segments:
+        placeholder_index = prompt_template.find(placeholder, offset)
+        if placeholder_index == -1:
+            raise ValueError("Placeholder '{}' was not found in the prompt template.".format(placeholder))
+        parts.append(prompt_template[offset:placeholder_index])
+        offset = placeholder_index + len(placeholder)
+    parts.append(prompt_template[offset:])
+    return parts
+
+
+def get_prompt_embeddings(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, template, test_case_input: str):
+    segments = get_user_segments(template, test_case_input)
+    prompt_parts = split_template_prompt(template["prompt"], segments)
+
+    embedding_chunks = []
+    perturb_mask = []
+    user_tokens = []
+
+    for index, (_, segment_text) in enumerate(segments):
+        part_ids = tokenize_without_special_tokens(tokenizer, prompt_parts[index], model.device)
+        part_embeddings = embed_token_ids(model, part_ids)
+        embedding_chunks.append(part_embeddings)
+        perturb_mask.extend([0.0] * part_ids.shape[1])
+
+        segment_ids = tokenize_without_special_tokens(tokenizer, segment_text, model.device)
+        segment_embeddings = embed_token_ids(model, segment_ids)
+        embedding_chunks.append(segment_embeddings)
+        perturb_mask.extend([1.0] * segment_ids.shape[1])
+        user_tokens.extend(tokenizer.convert_ids_to_tokens(segment_ids[0].tolist()))
+
+    final_part_ids = tokenize_without_special_tokens(tokenizer, prompt_parts[-1], model.device)
+    final_part_embeddings = embed_token_ids(model, final_part_ids)
+    embedding_chunks.append(final_part_embeddings)
+    perturb_mask.extend([0.0] * final_part_ids.shape[1])
+
+    input_embeddings = torch.cat(embedding_chunks, dim=1)
+    perturb_mask = np.array(perturb_mask, dtype=np.float32)
+    if not np.any(perturb_mask):
+        raise ValueError("No user tokens were found for GradShield perturbation.")
+
+    return input_embeddings, perturb_mask, user_tokens
+
+
 def get_embeddings(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, template: str, test_case_input: str):
     before_str = template["prompt"].split("{instruction}")[0]
     after_str = template["prompt"].split("{instruction}")[1]
@@ -66,14 +147,22 @@ class AttentionGradientHook:
         self.attention_grad.append(grad)
 
 
-def gradient_weighted_attention(model: AutoModelForCausalLM, tokenizer, template, test_case_input: str,top_k):
-    input_embeddings, before_embeddings, after_embeddings, input_tokens = get_embeddings(model, tokenizer, template, test_case_input)
+def normalize_token_importance(weighted_attentions, perturb_mask):
+    token_importance = np.zeros_like(weighted_attentions, dtype=np.float32)
+    user_positions = perturb_mask > 0
+    user_attentions = np.maximum(weighted_attentions[user_positions], 0)
 
-    input_embeds = torch.cat([
-        before_embeddings,
-        input_embeddings,
-        after_embeddings,
-    ], dim=1)
+    min_val = np.min(user_attentions)
+    max_val = np.max(user_attentions)
+    if max_val != min_val:
+        token_importance[user_positions] = (user_attentions - min_val) / (max_val - min_val)
+
+    return token_importance
+
+
+def gradient_weighted_attention(model: AutoModelForCausalLM, tokenizer, template, test_case_input: str, top_k):
+    input_embeds, perturb_mask, _ = get_prompt_embeddings(model, tokenizer, template, test_case_input)
+    prompt_token_count = input_embeds.shape[1]
 
     outputs = model.generate(
         inputs_embeds=input_embeds,
@@ -120,18 +209,10 @@ def gradient_weighted_attention(model: AutoModelForCausalLM, tokenizer, template
         weighted_attentions = torch.sum(weighted_attentions, dim=(0, 1))
 
         weighted_attentions = weighted_attentions.detach().to(torch.float).cpu().numpy()
-        weighted_attentions = weighted_attentions[before_embeddings.shape[1]:-(prefix.shape[1] + after_embeddings.shape[1])]
+        weighted_attentions = weighted_attentions[:prompt_token_count]
+        token_importance = normalize_token_importance(weighted_attentions, perturb_mask)
 
-        # RelU and Normalize input attention values
-        weighted_attentions = np.maximum(weighted_attentions, 0)
-        min_val = np.min(weighted_attentions)
-        max_val = np.max(weighted_attentions)
-        if max_val == min_val:
-            token_importance = np.zeros_like(weighted_attentions)
-        else:
-            token_importance = (weighted_attentions - min_val) / (max_val - min_val)
-
-        return token_importance
+        return token_importance, perturb_mask
     finally:
         for forward_handle in forward_handles:
             forward_handle.remove()
@@ -149,17 +230,17 @@ def generate_gaussian_noise(input_embeddings, mean=0.0, std_dev=0.1):
 
 def GradShield(model, tokenizer, template, prompt, copies=10, std=(0.05,0.5) ,top_k=4):
 
-    token_importance = gradient_weighted_attention(model, tokenizer, template, prompt, top_k)
-    input_embeddings, before_embeddings, after_embeddings, _ = get_embeddings(model, tokenizer, template, prompt)
+    token_importance, perturb_mask = gradient_weighted_attention(model, tokenizer, template, prompt, top_k)
+    input_embeddings, _, _ = get_prompt_embeddings(model, tokenizer, template, prompt)
 
     min_std = std[0]
     max_std = std[1]
-    step = (max_std - min_std) / (copies - 1)
+    step = (max_std - min_std) / (copies - 1) if copies > 1 else 0
 
     batch = []
     for i in range(copies):
-        std = min_std + i * step
-        noise = generate_gaussian_noise(input_embeddings, mean=0.0, std_dev=std)[0]
+        current_std = min_std + i * step
+        noise = generate_gaussian_noise(input_embeddings, mean=0.0, std_dev=current_std)[0]
         noise = torch.abs(noise).to(model.device)
         mask = torch.tensor(token_importance).view(noise.shape[0], 1).to(model.device)
 
@@ -168,12 +249,7 @@ def GradShield(model, tokenizer, template, prompt, copies=10, std=(0.05,0.5) ,to
         # Adjust embedding data type
         noise_embeddings = noise_embeddings.to(dtype=model.get_input_embeddings().weight.dtype)
 
-        input_embeds = torch.cat([
-            before_embeddings,
-            noise_embeddings,
-            after_embeddings,
-        ], dim=1)
-        batch.append(input_embeds)
+        batch.append(noise_embeddings)
 
     batch = torch.cat(batch, dim=0)
 
@@ -209,7 +285,9 @@ def GradShield(model, tokenizer, template, prompt, copies=10, std=(0.05,0.5) ,to
     else:
         response = random.choice(majority_outputs)
 
-    del outputs, input_embeddings, before_embeddings, after_embeddings, _, noise_embeddings, input_embeds
+    returned_token_importance = token_importance[perturb_mask > 0]
+
+    del outputs, input_embeddings, noise_embeddings, batch
     gc.collect()
 
-    return response, token_importance
+    return response, returned_token_importance
